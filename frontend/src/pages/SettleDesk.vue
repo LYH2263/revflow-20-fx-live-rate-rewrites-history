@@ -20,11 +20,16 @@ async function toggle(runId) {
   }
   expanded.value[runId] = true
   if (!runDetail.value[runId]) {
-    const [snap, nets] = await Promise.all([
+    const [snap, nets, proofs] = await Promise.all([
       getJson(`/api/settle-runs/${runId}/fx-snapshot`),
       getJson(`/api/settle-runs/${runId}/account-nets`),
+      getJson(`/api/settle-runs/${runId}/conversion-proofs`),
     ])
-    runDetail.value[runId] = { snap, nets: nets.account_nets }
+    runDetail.value[runId] = {
+      snap,
+      nets: nets.account_nets,
+      proofs: proofs.proofs,
+    }
   }
 }
 
@@ -62,8 +67,8 @@ function yuan(cents) {
 <template>
   <div>
     <h1>归并台</h1>
-    <p class="lead">对「待归并」正向与冲正跑一轮净额归并：开跑先冻结本趟汇率集，全部折算只读冻结快照，配平落余额，未平/超额进隔离。</p>
-    <p class="note-strip">本趟冻结的「币种→记账币(CNY)」汇率落库后不可改删；点运行行可回看冻结快照与每账户折算净额。</p>
+    <p class="lead">对「待归并」正向与冲正跑一轮净额归并：开跑先钉扎本趟汇率集，趟内折算只读钉扎快照、禁止再读牌价表，配平落余额，未平/超额进隔离。</p>
+    <p class="note-strip">本趟钉扎的「币种→记账币(CNY)」汇率落库后不可改删；每币种折算证明（钉扎汇率、折算前后本币合计、触及流水键）与快照、流水、余额同事务同源；点运行行可回看。</p>
     <div class="row-actions">
       <button class="btn" :disabled="busy" @click="runSettle">跑净额归并</button>
     </div>
@@ -74,7 +79,7 @@ function yuan(cents) {
       <table>
         <thead>
           <tr>
-            <th>#</th><th>状态</th><th>正向</th><th>冲正</th><th>已归并</th><th>隔离</th><th>折算净额（元）</th><th>结束</th><th>汇率快照</th>
+            <th>#</th><th>状态</th><th>正向</th><th>冲正</th><th>已归并</th><th>隔离</th><th>折算净额（元）</th><th>结束</th><th>钉扎/证明</th>
           </tr>
         </thead>
         <tbody>
@@ -93,10 +98,10 @@ function yuan(cents) {
             <tr v-if="expanded[r.id] && runDetail[r.id]" class="detail-row">
               <td colspan="9">
                 <div class="fx-detail">
-                  <h3>本趟冻结汇率（快照 · 记账币 {{ runDetail[r.id].snap.quote_currency }} · {{ runDetail[r.id].snap.frozen_at }}）</h3>
+                  <h3>本趟钉扎汇率（快照 · 记账币 {{ runDetail[r.id].snap.quote_currency }} · {{ runDetail[r.id].snap.frozen_at }}）</h3>
                   <table class="sub">
                     <thead>
-                      <tr><th>币种</th><th>折记账币</th><th>冻结汇率</th><th>来源</th><th>快照#</th></tr>
+                      <tr><th>币种</th><th>折记账币</th><th>钉扎汇率</th><th>来源</th><th>快照#</th></tr>
                     </thead>
                     <tbody>
                       <tr v-for="fx in runDetail[r.id].snap.rates" :key="fx.id">
@@ -106,6 +111,29 @@ function yuan(cents) {
                         <td>{{ fx.source }}</td>
                         <td>{{ fx.id }}</td>
                       </tr>
+                    </tbody>
+                  </table>
+
+                  <h3>折算证明（按币种 · 与快照、流水、余额同源，落库不可改删）</h3>
+                  <table class="sub">
+                    <thead>
+                      <tr><th>币种</th><th>钉扎汇率</th><th>折算前本币合计（分）</th><th>折算后本币合计（记账币分）</th><th>触及笔数</th><th>触及流水键</th><th>证明#</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="p in runDetail[r.id].proofs" :key="p.id">
+                        <td><span class="tag">{{ p.base_currency }}</span></td>
+                        <td class="mono">{{ p.pinned_rate_text }}</td>
+                        <td class="mono">{{ p.native_total_cents }}</td>
+                        <td class="mono">{{ p.converted_total_cents }}</td>
+                        <td>{{ p.entry_count }}</td>
+                        <td class="keys">
+                          <span v-for="pe in p.entries" :key="pe.id" class="key-chip" :class="{ rev: pe.sign < 0 }">
+                            {{ pe.entry_key }}<em v-if="pe.sign < 0">（冲正-）</em>
+                          </span>
+                        </td>
+                        <td>{{ p.id }}</td>
+                      </tr>
+                      <tr v-if="!runDetail[r.id].proofs.length"><td colspan="7">本趟无已归并流水，无折算证明</td></tr>
                     </tbody>
                   </table>
 
@@ -148,4 +176,17 @@ function yuan(cents) {
 .fx-detail h3:first-child { margin-top: 0; }
 table.sub { font-size: 12.5px; }
 .mono { font-family: var(--mono); }
+.keys { white-space: normal; line-height: 1.9; }
+.key-chip {
+  display: inline-block;
+  margin: 0 6px 4px 0;
+  padding: 1px 7px;
+  border: 1px solid var(--line, #d8dee6);
+  border-radius: 10px;
+  background: #f2f6fb;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.key-chip.rev { background: #fdf3f2; border-color: #e3c4c0; }
+.key-chip em { font-style: normal; color: #b04a3f; }
 </style>

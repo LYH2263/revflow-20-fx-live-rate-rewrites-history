@@ -21,7 +21,7 @@ function yuan(cents) {
 <template>
   <div>
     <h1>冲正流水</h1>
-    <p class="lead">冲正须关联原正向流水键；无原单或超额会在归并时进未平隔离。配平冲正按本趟冻结汇率折算后以负向参与净额。</p>
+    <p class="lead">冲正须关联原正向流水键；无原单或超额会在归并时进未平隔离。配平冲正按本趟钉扎汇率折算后以负向参与净额。</p>
     <p v-if="err" class="msg">{{ err }}</p>
     <div class="panel">
       <table>

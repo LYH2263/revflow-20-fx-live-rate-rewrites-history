@@ -59,7 +59,7 @@ function toggle(id) {
 <template>
   <div>
     <h1>净额互证</h1>
-    <p class="lead">核对「已归并流水折算净额」与「账户余额合计」，并展示本趟冻结汇率——报告汇率与落库快照同源，逐条折算复算留痕。</p>
+    <p class="lead">核对「已归并流水折算净额」与「账户余额合计」，并展示本趟钉扎汇率与折算证明——报告证据与落库快照、证明同源，逐条折算复算留痕。</p>
     <div class="row-actions">
       <button class="btn" :disabled="busy" @click="runVerify">跑净额互证</button>
     </div>
@@ -70,7 +70,7 @@ function toggle(id) {
       <table>
         <thead>
           <tr>
-            <th>#</th><th>归并#</th><th>流水净额</th><th>余额合计</th><th>隔离数</th><th>一致</th><th>时间</th><th>冻结汇率</th>
+            <th>#</th><th>归并#</th><th>流水净额</th><th>余额合计</th><th>隔离数</th><th>一致</th><th>时间</th><th>钉扎/证明</th>
           </tr>
         </thead>
         <tbody>
@@ -92,19 +92,40 @@ function toggle(id) {
             <tr v-if="expanded[r.id] && detail(r)" class="detail-row">
               <td colspan="8">
                 <div class="fx-detail">
-                  <h3>本趟冻结汇率（与 fx_rate_snapshots 同源 · 记账币 {{ detail(r)['记账币'] }}）</h3>
+                  <h3>本趟钉扎汇率（与 fx_rate_snapshots 同源 · 记账币 {{ detail(r)['记账币'] }}）</h3>
                   <table class="sub">
                     <thead>
-                      <tr><th>币种</th><th>折记账币</th><th>冻结汇率</th><th>来源</th><th>快照#</th><th>冻结时刻</th></tr>
+                      <tr><th>币种</th><th>折记账币</th><th>钉扎汇率</th><th>来源</th><th>快照#</th><th>钉扎时刻</th></tr>
                     </thead>
                     <tbody>
-                      <tr v-for="fx in detail(r)['本趟冻结汇率']" :key="fx['快照id']">
+                      <tr v-for="fx in detail(r)['本趟钉扎汇率']" :key="fx['快照id']">
                         <td>{{ fx['币种'] }}</td>
                         <td>{{ fx['折记账币'] }}</td>
-                        <td class="mono">{{ fx['冻结汇率'] }}</td>
+                        <td class="mono">{{ fx['钉扎汇率'] }}</td>
                         <td>{{ fx['来源'] }}</td>
                         <td>{{ fx['快照id'] }}</td>
-                        <td>{{ fx['冻结时刻'] }}</td>
+                        <td>{{ fx['钉扎时刻'] }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+
+                  <h3>折算证明（fx_conversion_proofs · 触及流水键同源闭合）</h3>
+                  <table class="sub">
+                    <thead>
+                      <tr><th>币种</th><th>钉扎汇率</th><th>折算前本币合计（分）</th><th>折算后本币合计（分）</th><th>触及流水键</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="p in detail(r)['本趟折算证明']" :key="p['证明id']">
+                        <td><span class="tag">{{ p['币种'] }}</span></td>
+                        <td class="mono">{{ p['钉扎汇率'] }}</td>
+                        <td class="mono">{{ p['折算前本币合计分'] }}</td>
+                        <td class="mono">{{ p['折算后本币合计分'] }}</td>
+                        <td class="keys">
+                          <span v-for="k in p['触及流水键']" :key="k" class="key-chip">{{ k }}</span>
+                        </td>
+                      </tr>
+                      <tr v-if="!detail(r)['本趟折算证明'] || !detail(r)['本趟折算证明'].length">
+                        <td colspan="5">本趟无已归并流水，无折算证明</td>
                       </tr>
                     </tbody>
                   </table>
@@ -113,6 +134,7 @@ function toggle(id) {
                   <ul class="checks">
                     <li>快照归属同源：<span class="tag" :class="detail(r)['同源检查_快照归属'] ? 'on' : 'bad'">{{ detail(r)['同源检查_快照归属'] ? '通过' : '失败' }}</span></li>
                     <li>逐条折算复算：<span class="tag" :class="detail(r)['同源检查_逐条折算复算'] ? 'on' : 'bad'">{{ detail(r)['同源检查_逐条折算复算'] ? '通过' : '失败' }}</span></li>
+                    <li>折算证明同源闭合：<span class="tag" :class="detail(r)['同源检查_折算证明'] ? 'on' : 'bad'">{{ detail(r)['同源检查_折算证明'] ? '通过' : '失败' }}</span></li>
                     <li>本趟净额一致：<span class="tag" :class="detail(r)['本趟净额一致性'] ? 'on' : 'bad'">{{ detail(r)['本趟净额一致性'] ? '通过' : '失败' }}</span> <em class="muted">重算 {{ detail(r)['本趟流水净额分(折算重算)'] }} = 运行 {{ detail(r)['运行记录净额分'] }}</em></li>
                     <li>余额跨趟重算：<span class="tag" :class="detail(r)['余额跨趟重算一致性'] ? 'on' : 'bad'">{{ detail(r)['余额跨趟重算一致性'] ? '通过' : '失败' }}</span></li>
                   </ul>
@@ -141,4 +163,15 @@ table.sub { font-size: 12.5px; }
 .mono { font-family: var(--mono); }
 .checks { margin: 0; padding-left: 18px; font-size: 13px; line-height: 2; }
 .checks .muted { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.keys { white-space: normal; line-height: 1.9; }
+.key-chip {
+  display: inline-block;
+  margin: 0 6px 4px 0;
+  padding: 1px 7px;
+  border: 1px solid var(--line, #d8dee6);
+  border-radius: 10px;
+  background: #f2f6fb;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
 </style>

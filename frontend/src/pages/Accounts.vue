@@ -24,11 +24,16 @@ async function toggle(a) {
   }
   expanded.value[a.id] = true
   if (!runDetail.value[runId]) {
-    const [snap, nets] = await Promise.all([
+    const [snap, nets, proofs] = await Promise.all([
       getJson(`/api/settle-runs/${runId}/fx-snapshot`),
       getJson(`/api/settle-runs/${runId}/account-nets`),
+      getJson(`/api/settle-runs/${runId}/conversion-proofs`),
     ])
-    runDetail.value[runId] = { snap, nets: nets.account_nets }
+    runDetail.value[runId] = {
+      snap,
+      nets: nets.account_nets,
+      proofs: proofs.proofs,
+    }
   }
 }
 
@@ -40,7 +45,7 @@ function yuan(cents) {
 <template>
   <div>
     <h1>账户</h1>
-    <p class="lead">结算账户与归并后余额；外币账户余额已按归并趟冻结汇率折算为记账币（CNY）分。点行可回看该账户最近一趟的汇率快照与折算净额。</p>
+    <p class="lead">结算账户与归并后余额；外币账户余额已按归并趟钉扎汇率折算为记账币（CNY）分。点行可回看该账户最近一趟的钉扎汇率、折算证明与折算净额。</p>
     <p v-if="err" class="msg">{{ err }}</p>
     <div class="panel">
       <table>
@@ -63,9 +68,9 @@ function yuan(cents) {
             <tr v-if="expanded[a.id] && a.last_settle_run_id && runDetail[a.last_settle_run_id]" class="detail-row">
               <td colspan="6">
                 <div class="fx-detail">
-                  <h3>归并 #{{ a.last_settle_run_id }} 冻结汇率（{{ runDetail[a.last_settle_run_id].snap.frozen_at }}）</h3>
+                  <h3>归并 #{{ a.last_settle_run_id }} 钉扎汇率（{{ runDetail[a.last_settle_run_id].snap.frozen_at }}）</h3>
                   <table class="sub">
-                    <thead><tr><th>币种</th><th>折记账币</th><th>冻结汇率</th><th>来源</th><th>快照#</th></tr></thead>
+                    <thead><tr><th>币种</th><th>折记账币</th><th>钉扎汇率</th><th>来源</th><th>快照#</th></tr></thead>
                     <tbody>
                       <tr v-for="fx in runDetail[a.last_settle_run_id].snap.rates" :key="fx.id">
                         <td>{{ fx.base_currency }}</td>
@@ -74,6 +79,30 @@ function yuan(cents) {
                         <td>{{ fx.source }}</td>
                         <td>{{ fx.id }}</td>
                       </tr>
+                    </tbody>
+                  </table>
+                  <h3>本账户折算证明（钉扎汇率与触及流水键 · 落库不可改删）</h3>
+                  <table class="sub">
+                    <thead><tr><th>币种</th><th>钉扎汇率</th><th>折算前本币合计（分）</th><th>折算后本币合计（CNY 分）</th><th>本账户触及流水键</th></tr></thead>
+                    <tbody>
+                      <template v-for="p in runDetail[a.last_settle_run_id].proofs" :key="p.id">
+                        <tr v-if="p.entries.some(pe => pe.account_id === a.id)">
+                          <td><span class="tag">{{ p.base_currency }}</span></td>
+                          <td class="mono">{{ p.pinned_rate_text }}</td>
+                          <td class="mono">{{ p.native_total_cents }}</td>
+                          <td class="mono">{{ p.converted_total_cents }}</td>
+                          <td class="keys">
+                            <span
+                              v-for="pe in p.entries.filter(x => x.account_id === a.id)"
+                              :key="pe.id"
+                              class="key-chip"
+                              :class="{ rev: pe.sign < 0 }"
+                            >
+                              {{ pe.entry_key }}<em v-if="pe.sign < 0">（冲正-）</em>
+                            </span>
+                          </td>
+                        </tr>
+                      </template>
                     </tbody>
                   </table>
                   <h3>本账户本趟折算净额</h3>
@@ -110,4 +139,17 @@ function yuan(cents) {
 .fx-detail h3:first-child { margin-top: 0; }
 table.sub { font-size: 12.5px; }
 .mono { font-family: var(--mono); }
+.keys { white-space: normal; line-height: 1.9; }
+.key-chip {
+  display: inline-block;
+  margin: 0 6px 4px 0;
+  padding: 1px 7px;
+  border: 1px solid var(--line, #d8dee6);
+  border-radius: 10px;
+  background: #f2f6fb;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.key-chip.rev { background: #fdf3f2; border-color: #e3c4c0; }
+.key-chip em { font-style: normal; color: #b04a3f; }
 </style>

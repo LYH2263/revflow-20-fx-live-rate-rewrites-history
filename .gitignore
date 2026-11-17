@@ -2,6 +2,8 @@ backend/data/
 backend/data_test/
 backend/data_*/
 backend/.venv/
+.venv/
+.npm-cache/
 **/__pycache__/
 **/.pytest_cache/
 frontend/node_modules/

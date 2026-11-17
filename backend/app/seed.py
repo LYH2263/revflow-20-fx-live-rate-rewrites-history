@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS settle_runs (
   started_at TEXT NOT NULL,
   finished_at TEXT
 );
--- 牌价源表：只在归并开跑冻结时读一次，本趟内禁止回表按行取价
+-- 牌价源表：只在归并开跑钉扎时读一次，本趟内禁止回表按行取价
 CREATE TABLE IF NOT EXISTS fx_rates (
   id INTEGER PRIMARY KEY,
   base_currency TEXT NOT NULL,
@@ -61,8 +61,8 @@ CREATE TABLE IF NOT EXISTS fx_rates (
   effective_at TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT 'fixture'
 );
--- 形态一：独立汇率快照表挂归并运行 id。触发器禁止 UPDATE/DELETE，
--- 保证本趟冻结汇率可回看、不可变，折算后余额始终留得下汇率证据。
+-- 形态一（本系统选定）：独立汇率快照表挂归并运行 id。触发器禁止 UPDATE/DELETE，
+-- 保证本趟钉扎汇率可回看、不可变，折算后余额始终留得下汇率证据。
 CREATE TABLE IF NOT EXISTS fx_rate_snapshots (
   id INTEGER PRIMARY KEY,
   settle_run_id INTEGER NOT NULL REFERENCES settle_runs(id),
@@ -74,6 +74,68 @@ CREATE TABLE IF NOT EXISTS fx_rate_snapshots (
   frozen_at TEXT NOT NULL,
   UNIQUE(settle_run_id, base_currency)
 );
+-- 钉扎汇率落库即不可变：任何改写/删除尝试由触发器 RAISE(ABORT) 拒绝
+CREATE TRIGGER IF NOT EXISTS trg_fx_rate_snapshots_no_update
+BEFORE UPDATE ON fx_rate_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'fx_rate_snapshots 为归并钉扎证据，不可修改');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_fx_rate_snapshots_no_delete
+BEFORE DELETE ON fx_rate_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'fx_rate_snapshots 为归并钉扎证据，不可删除');
+END;
+
+-- 折算证明实体（基线所无，本回归新增）：每趟每币种一行，挂归并运行 id 与
+-- 钉扎快照 id，记录钉扎汇率、折算前后本币合计（带符号：正向 +、冲正 -），
+-- 触及流水键落在子表 fx_conversion_proof_entries。证明只覆盖参与本趟净额的
+-- 「已归并」流水，故各币种折算后合计之和 == settle_account_nets 合计 ==
+-- settle_runs.net_cents，与快照、流水、余额同源可互证。证明同样不可改删。
+CREATE TABLE IF NOT EXISTS fx_conversion_proofs (
+  id INTEGER PRIMARY KEY,
+  settle_run_id INTEGER NOT NULL REFERENCES settle_runs(id),
+  fx_rate_snapshot_id INTEGER NOT NULL REFERENCES fx_rate_snapshots(id),
+  base_currency TEXT NOT NULL,
+  quote_currency TEXT NOT NULL,
+  pinned_rate_text TEXT NOT NULL,
+  native_total_cents INTEGER NOT NULL,
+  converted_total_cents INTEGER NOT NULL,
+  entry_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(settle_run_id, base_currency)
+);
+CREATE TABLE IF NOT EXISTS fx_conversion_proof_entries (
+  id INTEGER PRIMARY KEY,
+  proof_id INTEGER NOT NULL REFERENCES fx_conversion_proofs(id),
+  settle_run_id INTEGER NOT NULL,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  ledger_entry_id INTEGER NOT NULL,
+  entry_key TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  sign INTEGER NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  converted_cents INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trg_fx_conversion_proofs_no_update
+BEFORE UPDATE ON fx_conversion_proofs
+BEGIN
+  SELECT RAISE(ABORT, 'fx_conversion_proofs 为折算证明，不可修改');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_fx_conversion_proofs_no_delete
+BEFORE DELETE ON fx_conversion_proofs
+BEGIN
+  SELECT RAISE(ABORT, 'fx_conversion_proofs 为折算证明，不可删除');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_fx_conversion_proof_entries_no_update
+BEFORE UPDATE ON fx_conversion_proof_entries
+BEGIN
+  SELECT RAISE(ABORT, 'fx_conversion_proof_entries 为折算证明触及键，不可修改');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_fx_conversion_proof_entries_no_delete
+BEFORE DELETE ON fx_conversion_proof_entries
+BEGIN
+  SELECT RAISE(ABORT, 'fx_conversion_proof_entries 为折算证明触及键，不可删除');
+END;
 
 -- 每账户每趟折算净额（记账币分），账户与归并台据此查看本趟折算净额
 CREATE TABLE IF NOT EXISTS settle_account_nets (

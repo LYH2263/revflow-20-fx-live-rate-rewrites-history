@@ -25,6 +25,11 @@ def get_run_nets(run_id: int):
     return svc.get_run_account_nets(run_id)
 
 
+@router.get("/settle-runs/{run_id}/conversion-proofs")
+def get_run_proofs(run_id: int):
+    return svc.get_run_conversion_proofs(run_id)
+
+
 @router.post("/settle-runs")
 def post_run():
     return svc.run_settle()

@@ -26,7 +26,7 @@ def dashboard() -> dict:
             "SELECT COUNT(*) AS c FROM ledger_entries WHERE status = '待归并'"
         ).fetchone()["c"]
         q = conn.execute("SELECT COUNT(*) AS c FROM quarantine_items").fetchone()["c"]
-        # 余额均为记账币分：外币账户余额已按归并冻结汇率折算
+        # 余额均为记账币分：外币账户余额已按归并钉扎汇率折算
         bal = conn.execute("SELECT COALESCE(SUM(balance_cents), 0) AS s FROM accounts").fetchone()["s"]
         last = conn.execute("SELECT * FROM settle_runs ORDER BY id DESC LIMIT 1").fetchone()
         return {
@@ -113,9 +113,14 @@ def _quarantine(conn, run_id: int, now: str, entry: dict, reason: str) -> None:
 def run_settle() -> dict:
     """净额归并（多币种）。
 
-    本趟开始先把涉及币种→记账币的汇率一次性冻结进 fx_rate_snapshots，
-    随后所有折算只读冻结集；整单在一个事务内提交，任一步失败整单回滚，
-    不留下「部分账户已按新汇率、部分未折算」的中间态。
+    汇率钉扎（选定形态一：本趟汇率快照表按归并运行 id）：本趟开始先把涉及
+    币种→记账币的汇率一次性钉扎进 fx_rate_snapshots，随后本趟折算**只准读
+    钉扎快照**，禁止再访问 fx_rates 牌价表——后续牌价变动无法改写本趟任何
+    已归并流水的折算额、净额与余额。
+
+    整单在一个事务内提交：缺币种牌价或任一步失败即整单回滚，不留下
+    「部分账户已折算、部分未折算」的半折算留账。折算证明（fx_conversion_proofs
+    及触及流水键子表）与快照、流水、余额同事务落库，天然同源。
     """
     conn = connect()
     try:
@@ -135,21 +140,23 @@ def run_settle() -> dict:
         reversals = [e for e in pending if e["kind"] == "冲正"]
         fwd_by_key = {f["entry_key"]: f for f in forwards}
 
-        # —— 1. 冻结本趟汇率集：整趟只此一次回牌价表，之后只读快照 ——
+        # —— 1. 钉扎本趟汇率集：整趟只此一次回牌价表，之后禁止再读 fx_rates ——
         currencies = {e["currency"] for e in pending}
         try:
             snapshots = fx_settle.freeze_rate_snapshot(conn, run_id, now, currencies)
         except FxRateMissing as exc:
             conn.rollback()
             raise HTTPException(400, f"归并失败闭：{exc}") from exc
+        # 钉扎汇率文本：本趟所有折算只能取这里（路径 A：开跑写入快照后禁止再读牌价表）
+        pinned_rates = {ccy: snap["rate_text"] for ccy, snap in snapshots.items()}
 
-        def stamped(e: dict) -> None:
+        # 折算证明成员：仅参与本趟净额的「已归并」流水（隔离流水不进净额，不入证明）
+        proof_members: list[dict] = []
+
+        def stamped(e: dict, sign: int | None = None) -> None:
+            """按钉扎快照折算并盖戳；sign 给定时同步收集进折算证明。"""
             snap = snapshots[e["currency"]]
-            live = conn.execute(
-                "SELECT rate_text FROM fx_rates WHERE base_currency = ? ORDER BY id DESC LIMIT 1",
-                (e["currency"],),
-            ).fetchone()["rate_text"]
-            converted = convert_cents(e["amount_cents"], live)
+            converted = convert_cents(e["amount_cents"], pinned_rates[e["currency"]])
             conn.execute(
                 """
                 UPDATE ledger_entries
@@ -158,6 +165,15 @@ def run_settle() -> dict:
                 """,
                 (run_id, snap["id"], converted, e["id"]),
             )
+            if sign is not None:
+                e["converted_cents"] = converted
+                proof_members.append(
+                    {
+                        "entry": e,
+                        "snapshot": snap,
+                        "sign": sign,
+                    }
+                )
 
         # 每个正向已占用冲正额度（原币分，同账户同币种内配平）
         used: dict[str, int] = {f["entry_key"]: 0 for f in forwards}
@@ -167,15 +183,13 @@ def run_settle() -> dict:
         net_converted: dict[int, int] = {}
 
         def add_net(entry: dict, sign: int) -> None:
+            # 只引用钉扎值，绝不回 fx_rates 实时取价
+            pinned = pinned_rates[entry["currency"]]
             acc = entry["account_id"]
             net_native[acc] = net_native.get(acc, 0) + sign * entry["amount_cents"]
-            live = conn.execute(
-                "SELECT rate_text FROM fx_rates WHERE base_currency = ? ORDER BY id DESC LIMIT 1",
-                (entry["currency"],),
-            ).fetchone()["rate_text"]
             net_converted[acc] = (
                 net_converted.get(acc, 0)
-                + sign * convert_cents(entry["amount_cents"], live)
+                + sign * convert_cents(entry["amount_cents"], pinned)
             )
 
         # 正向全额参与净额（无论是否被冲正；冲正以负向减项配平）
@@ -214,18 +228,18 @@ def run_settle() -> dict:
                 continue
 
             used[target] += r["amount_cents"]
-            add_net(r, -1)  # 冲正按冻结汇率折算后以负向参与净额
+            add_net(r, -1)  # 冲正按钉扎汇率折算后以负向参与净额
             conn.execute(
                 "UPDATE ledger_entries SET status = '已归并' WHERE id = ?", (r["id"],)
             )
-            stamped(r)
+            stamped(r, -1)
             settled += 1
 
         for f in forwards:
             conn.execute(
                 "UPDATE ledger_entries SET status = '已归并' WHERE id = ?", (f["id"],)
             )
-            stamped(f)
+            stamped(f, +1)
             settled += 1
 
         # —— 每账户本趟折算净额落库；余额按该户全部已归并流水重算（多趟可累加守恒）——
@@ -256,6 +270,15 @@ def run_settle() -> dict:
                 (balance, run_id, acc_id),
             )
             net_total += conv
+
+        # —— 折算证明落库（与快照、流水、余额同事务，同源不可改删）——
+        proofs = fx_settle.persist_conversion_proofs(conn, run_id, now, proof_members)
+        proof_total = sum(p["converted_total_cents"] for p in proofs)
+        # 失败闭：证明口径必须与账户净额、运行净额三者闭合，否则整单回滚
+        if proof_total != net_total:
+            raise RuntimeError(
+                f"折算证明合计 {proof_total} 与本趟净额 {net_total} 不闭合，归并失败闭"
+            )
 
         finished = _now()
         conn.execute(
@@ -299,7 +322,7 @@ def get_settle_run(run_id: int) -> dict:
 
 
 def get_run_fx_snapshot(run_id: int) -> dict:
-    """本趟冻结汇率集（直接读落库快照，互证报告与页面同源）。"""
+    """本趟钉扎汇率集（直接读落库快照，互证报告与页面同源）。"""
     with connect() as conn:
         run = conn.execute("SELECT id FROM settle_runs WHERE id = ?", (run_id,)).fetchone()
         if not run:
@@ -314,7 +337,7 @@ def get_run_fx_snapshot(run_id: int) -> dict:
 
 
 def get_run_account_nets(run_id: int) -> dict:
-    """本趟每账户原币净额与按冻结汇率折算后的记账币净额。"""
+    """本趟每账户原币净额与按钉扎汇率折算后的记账币净额。"""
     with connect() as conn:
         run = conn.execute("SELECT id FROM settle_runs WHERE id = ?", (run_id,)).fetchone()
         if not run:
@@ -336,6 +359,24 @@ def get_run_account_nets(run_id: int) -> dict:
         }
 
 
+def get_run_conversion_proofs(run_id: int) -> dict:
+    """本趟折算证明（只读接口）：币种、钉扎汇率、折算前后本币合计、触及流水键。
+
+    数据全部来自落库的 fx_conversion_proofs / 子表与钉扎快照，与归并台、
+    账户界面、互证报告同源；接口不做任何折算重算，只回证据。
+    """
+    with connect() as conn:
+        run = conn.execute("SELECT id FROM settle_runs WHERE id = ?", (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(404, "归并运行不存在")
+        proofs = fx_settle.load_conversion_proofs(conn, run_id)
+        return {
+            "settle_run_id": run_id,
+            "quote_currency": BOOK_CURRENCY,
+            "proofs": proofs,
+        }
+
+
 def run_verify(settle_run_id: int | None = None) -> dict:
     with connect() as conn:
         if settle_run_id is None:
@@ -349,15 +390,10 @@ def run_verify(settle_run_id: int | None = None) -> dict:
 
         snap_rows = fx_settle.load_rate_snapshot(conn, settle_run_id)
         if not snap_rows:
-            raise HTTPException(400, f"归并 #{settle_run_id} 无冻结汇率快照，无法互证")
+            raise HTTPException(400, f"归并 #{settle_run_id} 无钉扎汇率快照，无法互证")
         snap_ids = {r["id"] for r in snap_rows}
-        rate_by_ccy = {}
-        for r in snap_rows:
-            live = conn.execute(
-                "SELECT rate_text FROM fx_rates WHERE base_currency = ? ORDER BY id DESC LIMIT 1",
-                (r["base_currency"],),
-            ).fetchone()
-            rate_by_ccy[r["base_currency"]] = live["rate_text"] if live else r["rate_text"]
+        # 互证只读本趟钉扎快照，禁止回 fx_rates 按实时牌价复算
+        rate_by_ccy = {r["base_currency"]: r["rate_text"] for r in snap_rows}
 
         stamped = rows_to_dicts(
             conn.execute(
@@ -366,10 +402,10 @@ def run_verify(settle_run_id: int | None = None) -> dict:
             ).fetchall()
         )
 
-        # 检查 1：每条流水挂的快照 id 必须属于本趟冻结集（同源证据链）
+        # 检查 1：每条流水挂的快照 id 必须属于本趟钉扎集（同源证据链）
         same_source = all(e["fx_rate_snapshot_id"] in snap_ids for e in stamped)
 
-        # 检查 2：按冻结快照逐条重算本趟折算，必须与落库 converted_cents 一致
+        # 检查 2：按钉扎快照逐条重算本趟折算，必须与落库 converted_cents 一致
         recompute_ok = True
         run_net_recomputed = 0
         for e in stamped:
@@ -419,6 +455,39 @@ def run_verify(settle_run_id: int | None = None) -> dict:
 
         net_consistent = run_net_consistent and balance_ok
 
+        # 检查 5：折算证明实体与钉扎快照、流水、净额同源闭合
+        proofs = fx_settle.load_conversion_proofs(conn, settle_run_id)
+        settled_rows = [e for e in stamped if e["status"] == "已归并"]
+        settled_ids = {e["id"] for e in settled_rows}
+        proof_entry_ids = set()
+        # 空趟（无已归并流水）允许零证明；有流水则证明必须存在且闭合
+        proof_ok = bool(proofs) if settled_rows else not proofs
+        proof_total = 0
+        for p in proofs:
+            proof_total += p["converted_total_cents"]
+            # 证明挂的钉扎快照必须属于本趟，且钉扎汇率与快照一致
+            snap = next((s for s in snap_rows if s["id"] == p["fx_rate_snapshot_id"]), None)
+            if snap is None or snap["rate_text"] != p["pinned_rate_text"]:
+                proof_ok = False
+            # 证明各币种折算前后合计须能用钉扎汇率由触及键逐条重算还原
+            native_check = 0
+            converted_check = 0
+            for pe in p["entries"]:
+                proof_entry_ids.add(pe["ledger_entry_id"])
+                native_check += pe["sign"] * pe["amount_cents"]
+                converted_check += pe["sign"] * convert_cents(
+                    pe["amount_cents"], p["pinned_rate_text"]
+                )
+            if (
+                native_check != p["native_total_cents"]
+                or converted_check != p["converted_total_cents"]
+                or len(p["entries"]) != p["entry_count"]
+            ):
+                proof_ok = False
+        # 触及键集合必须与本趟已归并流水完全一致，不多不少
+        if proof_entry_ids != settled_ids or proof_total != run["net_cents"]:
+            proof_ok = False
+
         q_count = conn.execute(
             "SELECT COUNT(*) AS c FROM quarantine_items WHERE settle_run_id = ?",
             (settle_run_id,),
@@ -438,19 +507,31 @@ def run_verify(settle_run_id: int | None = None) -> dict:
             "SELECT COALESCE(SUM(balance_cents), 0) AS s FROM accounts"
         ).fetchone()["s"]
 
-        consistent = 1 if (same_source and recompute_ok and net_consistent and all_ledger_net == all_bal) else 0
+        consistent = 1 if (same_source and recompute_ok and net_consistent and proof_ok and all_ledger_net == all_bal) else 0
         detail = {
             "记账币": BOOK_CURRENCY,
-            "本趟冻结汇率": [
+            "本趟钉扎汇率": [
                 {
                     "币种": r["base_currency"],
                     "折记账币": r["quote_currency"],
-                    "冻结汇率": r["rate_text"],
+                    "钉扎汇率": r["rate_text"],
                     "来源": r["source"],
                     "快照id": r["id"],
-                    "冻结时刻": r["frozen_at"],
+                    "钉扎时刻": r["frozen_at"],
                 }
                 for r in snap_rows
+            ],
+            "本趟折算证明": [
+                {
+                    "币种": p["base_currency"],
+                    "钉扎汇率": p["pinned_rate_text"],
+                    "折算前本币合计分": p["native_total_cents"],
+                    "折算后本币合计分": p["converted_total_cents"],
+                    "触及流水键": [pe["entry_key"] for pe in p["entries"]],
+                    "证明id": p["id"],
+                    "快照id": p["fx_rate_snapshot_id"],
+                }
+                for p in proofs
             ],
             "本趟流水净额分(折算重算)": run_net_recomputed,
             "本趟账户折算净额合计分": net_rows,
@@ -461,6 +542,7 @@ def run_verify(settle_run_id: int | None = None) -> dict:
             "本轮隔离数": q_count,
             "同源检查_快照归属": same_source,
             "同源检查_逐条折算复算": recompute_ok,
+            "同源检查_折算证明": proof_ok,
             "本趟净额一致性": run_net_consistent,
             "余额跨趟重算一致性": balance_ok,
             "净额一致性": net_consistent,

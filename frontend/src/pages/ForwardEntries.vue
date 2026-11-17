@@ -21,7 +21,7 @@ function yuan(cents) {
 <template>
   <div>
     <h1>正向流水</h1>
-    <p class="lead">已装载的正向入账；归并后状态变为「已归并」，并盖上本趟冻结汇率与折算记账币（CNY）金额。</p>
+    <p class="lead">已装载的正向入账；归并后状态变为「已归并」，并盖上本趟钉扎汇率与折算记账币（CNY）金额。</p>
     <p v-if="err" class="msg">{{ err }}</p>
     <div class="panel">
       <table>
