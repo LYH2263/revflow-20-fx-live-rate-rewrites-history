@@ -1,0 +1,32 @@
+{
+  "accounts": [
+    {"id": 1, "code": "ACC-零售-01", "name": "华东零售结算户", "currency": "CNY"},
+    {"id": 2, "code": "ACC-零售-02", "name": "华南零售结算户", "currency": "CNY"},
+    {"id": 3, "code": "ACC-批发-01", "name": "批发渠道结算户", "currency": "CNY"},
+    {"id": 4, "code": "ACC-跨境-01", "name": "北美美元结算户", "currency": "USD"},
+    {"id": 5, "code": "ACC-跨境-02", "name": "欧洲欧元结算户", "currency": "EUR"}
+  ],
+  "fx_rates": [
+    {"id": 1, "base_currency": "CNY", "quote_currency": "CNY", "rate_text": "1.00000000", "effective_at": "2026-11-16T00:00:00Z", "source": "fixture"},
+    {"id": 2, "base_currency": "USD", "quote_currency": "CNY", "rate_text": "7.18000000", "effective_at": "2026-11-16T00:00:00Z", "source": "fixture"},
+    {"id": 3, "base_currency": "EUR", "quote_currency": "CNY", "rate_text": "7.85000000", "effective_at": "2026-11-16T00:00:00Z", "source": "fixture"}
+  ],
+  "forward_entries": [
+    {"id": 1, "entry_key": "FWD-20261116-001", "account_id": 1, "amount_cents": 10000, "currency": "CNY", "biz_ref": "ORD-9001", "booked_at": "2026-11-16T08:00:00Z", "note": "零售正向"},
+    {"id": 2, "entry_key": "FWD-20261116-002", "account_id": 1, "amount_cents": 25000, "currency": "CNY", "biz_ref": "ORD-9002", "booked_at": "2026-11-16T09:10:00Z", "note": ""},
+    {"id": 3, "entry_key": "FWD-20261116-003", "account_id": 2, "amount_cents": 18000, "currency": "CNY", "biz_ref": "ORD-9101", "booked_at": "2026-11-16T10:00:00Z", "note": "华南正向"},
+    {"id": 4, "entry_key": "FWD-20261116-004", "account_id": 3, "amount_cents": 50000, "currency": "CNY", "biz_ref": "ORD-9201", "booked_at": "2026-11-16T11:20:00Z", "note": "批发正向"},
+    {"id": 5, "entry_key": "FWD-20261116-005", "account_id": 1, "amount_cents": 8000, "currency": "CNY", "biz_ref": "ORD-9003", "booked_at": "2026-11-16T12:00:00Z", "note": "待冲样本"},
+    {"id": 6, "entry_key": "FWD-20261116-006", "account_id": 4, "amount_cents": 12000, "currency": "USD", "biz_ref": "ORD-9301", "booked_at": "2026-11-16T12:20:00Z", "note": "北美美元正向"},
+    {"id": 7, "entry_key": "FWD-20261116-007", "account_id": 5, "amount_cents": 9000, "currency": "EUR", "biz_ref": "ORD-9401", "booked_at": "2026-11-16T12:40:00Z", "note": "欧洲欧元正向"},
+    {"id": 8, "entry_key": "FWD-20261116-008", "account_id": 4, "amount_cents": 5000, "currency": "USD", "biz_ref": "ORD-9302", "booked_at": "2026-11-16T13:00:00Z", "note": "待美元冲正样本"}
+  ],
+  "reversal_entries": [
+    {"id": 1, "entry_key": "REV-20261116-001", "account_id": 1, "amount_cents": 10000, "currency": "CNY", "biz_ref": "ORD-9001", "target_entry_key": "FWD-20261116-001", "booked_at": "2026-11-16T14:00:00Z", "note": "全额冲正"},
+    {"id": 2, "entry_key": "REV-20261116-002", "account_id": 1, "amount_cents": 5000, "currency": "CNY", "biz_ref": "ORD-9002", "target_entry_key": "FWD-20261116-002", "booked_at": "2026-11-16T15:00:00Z", "note": "部分冲正"},
+    {"id": 3, "entry_key": "REV-20261116-003", "account_id": 2, "amount_cents": 18000, "currency": "CNY", "biz_ref": "ORD-9101", "target_entry_key": "FWD-20261116-003", "booked_at": "2026-11-16T16:00:00Z", "note": "华南全额冲"},
+    {"id": 4, "entry_key": "REV-20261116-004", "account_id": 1, "amount_cents": 12000, "currency": "CNY", "biz_ref": "ORD-9X99", "target_entry_key": "FWD-MISSING", "booked_at": "2026-11-16T17:00:00Z", "note": "无原单——应进未平"},
+    {"id": 5, "entry_key": "REV-20261116-005", "account_id": 4, "amount_cents": 4000, "currency": "USD", "biz_ref": "ORD-9302", "target_entry_key": "FWD-20261116-008", "booked_at": "2026-11-16T17:20:00Z", "note": "美元部分冲正，按冻结汇率折算"},
+    {"id": 6, "entry_key": "REV-20261116-006", "account_id": 5, "amount_cents": 9000, "currency": "EUR", "biz_ref": "ORD-9401", "target_entry_key": "FWD-20261116-007", "booked_at": "2026-11-16T17:40:00Z", "note": "欧元全额冲，净额归 0"}
+  ]
+}
